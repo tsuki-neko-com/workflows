@@ -22,6 +22,23 @@ jobs:
     secrets: inherit
 ```
 
+## シークレット（必須）
+
+利用リポジトリごとに、以下 2 つを **repository secret** として登録してください。**登録しないとデプロイは必ず失敗します。**
+
+```sh
+gh secret set CLOUDFLARE_API_TOKEN --repo tsuki-neko-com/<repo>
+gh secret set CLOUDFLARE_ACCOUNT_ID --repo tsuki-neko-com/<repo>
+```
+
+**organization secret は使えません。** GitHub Free プランでは organization secret を参照できるのが public リポジトリだけで、private リポジトリでは実行時に空文字が渡ります。org の secret 一覧や `gh api repos/{owner}/{repo}/actions/organization-secrets` には「共有済み」と表示されるため正常に見えますが、ジョブからは読めません。org を Team プラン以上へ上げるか、リポジトリを public にすれば org secret へ一本化できます。
+
+caller 側の `secrets: inherit` はリポジトリ secret でもそのまま機能するので、貼り付ける caller の内容は変わりません。
+
+`deploy` job は最初にこの 2 つが空でないか検査し、空なら原因を名指しして即座に失敗します。
+
+必要な Cloudflare API トークンのスコープは「Edit Cloudflare Workers」テンプレートに加えて **Account → D1 → Edit** と **Account → Queues → Edit**。カスタムドメインを使う場合は Zone → Workers ルート → Edit を対象ゾーンに効かせてください。
+
 ## inputs
 
 | input | 型 | default | 意味 |
