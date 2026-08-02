@@ -62,6 +62,11 @@ jobs:
 
 初回適用時は整形コミットを単独に分離し、その SHA を `.git-blame-ignore-revs` に登録してください。その後、各開発環境で `git config blame.ignoreRevsFile .git-blame-ignore-revs` を実行します。
 
+`biome.json` に JSON コメントを書いてはいけません。コメントがあると Biome が設定を
+正しく読まず、`vcs.useIgnoreFile` による `.gitignore` の除外が効かなくなり、`dist/` などの
+ビルド成果物まで検査対象に入ります。ルールの重大度を変えた理由などは、リポジトリの
+README 側に書いてください。
+
 ## バージョニング（v1 可動タグ）
 
 利用側は常に `@v1` を参照します。後方互換のある変更は `main` へのマージ後、まず `self-test` が green であることを確認し、`git tag -f v1 && git push -f origin v1` で `v1` を進めてください。`v1` を動かすたびに `v1.<n>` 形式の不変タグも作成します。
