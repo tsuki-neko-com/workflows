@@ -1,0 +1,27 @@
+name: Self test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint workflow files
+        uses: docker://rhysd/actionlint:1.7.7
+        with:
+          args: -color
+
+  smoke:
+    uses: ./.github/workflows/workers.yml
+    with:
+      node-version: "22"
+      d1-database: ""
+      deploy-enabled: false
+    secrets: inherit
