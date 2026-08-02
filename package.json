@@ -1,0 +1,10 @@
+{
+  "name": "workflows",
+  "version": "0.0.0",
+  "private": true,
+  "description": "self-test fixture for the reusable workflow. Not a real project.",
+  "scripts": {
+    "ci": "echo \"self-test fixture: ci ok\"",
+    "deploy": "echo \"self-test fixture: deploy ok\""
+  }
+}
