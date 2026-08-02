@@ -1,0 +1,96 @@
+name: Workers CI/CD
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: "Node.js version passed to actions/setup-node"
+        type: string
+        required: false
+        default: "22"
+      d1-database:
+        description: "Cloudflare D1 database name. An empty string skips the migration step"
+        type: string
+        required: false
+        default: ""
+      deploy-enabled:
+        description: "Set to false to skip the deploy job entirely"
+        type: boolean
+        required: false
+        default: true
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: false
+      CLOUDFLARE_ACCOUNT_ID:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Detect build script
+        id: has-build
+        run: |
+          if [ "$(npm pkg get scripts.build)" = "{}" ]; then
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build
+        if: steps.has-build.outputs.value == 'true'
+        run: npm run build
+      - name: Verify
+        run: npm run ci
+
+  deploy:
+    needs: verify
+    if: >-
+      needs.verify.result == 'success'
+      && inputs.deploy-enabled
+      && github.event_name == 'push'
+      && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Detect build script
+        id: has-build
+        run: |
+          if [ "$(npm pkg get scripts.build)" = "{}" ]; then
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build
+        if: steps.has-build.outputs.value == 'true'
+        run: npm run build
+      - name: Apply D1 migrations
+        if: inputs.d1-database != ''
+        run: npm run migrate:remote
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Deploy
+        run: npm run deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
