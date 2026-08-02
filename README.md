@@ -42,6 +42,8 @@ org 内の caller リポジトリを自動検出し、`CLOUDFLARE_API_TOKEN` と
 
 ### 事前準備
 
+認証情報ファイルはこのリポジトリの外（`~/.config/tsuki-neko/`）に置いてください。保険として `.gitignore` に `*.env` を入れてあり、誤ってリポジトリ内へ置いてもコミット対象になりません。
+
 `~/.config/tsuki-neko/cloudflare.env` を作成します。
 
 ```sh
