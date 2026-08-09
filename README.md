@@ -95,10 +95,14 @@ gh secret set CLOUDFLARE_ACCOUNT_ID --repo tsuki-neko-com/<repo>
 | `working-directory` | string | `"."` | npm コマンドを実行するディレクトリ。Worker がサブディレクトリにあり、かつ root の npm workspaces に含まれていない場合に指定する |
 | `npm-registry-scope` | string | `""` | GitHub Packages で配布している npm scope（例: `@tsuki-neko-com`）。空でなければ npm を `npm.pkg.github.com` に対して認証する |
 
-`npm-registry-scope` を使う場合、caller 側に `packages: read` 権限が要ります。この
-reusable workflow 側では既に宣言済みなので、caller が `permissions:` を明示的に
-絞っているときだけ追記してください。認証には `secrets.GITHUB_TOKEN` を使うため、
-追加の secret 登録は不要です。
+この workflow は `packages: read` を要求します。再利用ワークフローは caller の権限を
+超えられないため、**caller 側で `permissions:` を明示している場合は `packages: read`
+を必ず含めてください**。含めないと job が 1 つも起動せず `startup_failure` になります
+（ログが残らないので原因が分かりにくい）。`permissions:` を書いていない caller は
+既定の token 権限で動くため、追記は不要です。
+
+`npm-registry-scope` の認証には `secrets.GITHUB_TOKEN` を使うので、追加の secret 登録は
+不要です。
 
 ## npm script 規約
 

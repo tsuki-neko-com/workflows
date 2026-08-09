@@ -7,6 +7,9 @@ on:
 
 permissions:
   contents: read
+  # workers.yml が packages: read を要求するため、caller 側にも同じ権限が要る。
+  # 再利用ワークフローは caller の権限を超えられず、超えると startup failure になる。
+  packages: read
 
 jobs:
   actionlint:
