@@ -18,9 +18,20 @@ on:
         type: boolean
         required: false
         default: true
+      working-directory:
+        description: "Directory the npm commands run in. Use it when the Worker lives in a subdirectory that is not a root workspace member"
+        type: string
+        required: false
+        default: "."
+      npm-registry-scope:
+        description: "npm scope hosted on GitHub Packages, such as @tsuki-neko-com. A non-empty value authenticates npm against npm.pkg.github.com and requires 'packages: read'"
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
+  packages: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -35,10 +46,17 @@ jobs:
         with:
           node-version: ${{ inputs.node-version }}
           cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+          registry-url: ${{ inputs.npm-registry-scope != '' && 'https://npm.pkg.github.com' || '' }}
+          scope: ${{ inputs.npm-registry-scope }}
       - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
         run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Detect build script
         id: has-build
+        working-directory: ${{ inputs.working-directory }}
         run: |
           if [ "$(npm pkg get scripts.build)" = "{}" ]; then
             echo "value=false" >> "$GITHUB_OUTPUT"
@@ -47,8 +65,10 @@ jobs:
           fi
       - name: Build
         if: steps.has-build.outputs.value == 'true'
+        working-directory: ${{ inputs.working-directory }}
         run: npm run build
       - name: Verify
+        working-directory: ${{ inputs.working-directory }}
         run: npm run ci
 
   deploy:
@@ -65,10 +85,17 @@ jobs:
         with:
           node-version: ${{ inputs.node-version }}
           cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+          registry-url: ${{ inputs.npm-registry-scope != '' && 'https://npm.pkg.github.com' || '' }}
+          scope: ${{ inputs.npm-registry-scope }}
       - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
         run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Detect build script
         id: has-build
+        working-directory: ${{ inputs.working-directory }}
         run: |
           if [ "$(npm pkg get scripts.build)" = "{}" ]; then
             echo "value=false" >> "$GITHUB_OUTPUT"
@@ -77,6 +104,7 @@ jobs:
           fi
       - name: Build
         if: steps.has-build.outputs.value == 'true'
+        working-directory: ${{ inputs.working-directory }}
         run: npm run build
       - name: Check Cloudflare credentials
         env:
@@ -93,11 +121,13 @@ jobs:
 
       - name: Apply D1 migrations
         if: inputs.d1-database != ''
+        working-directory: ${{ inputs.working-directory }}
         run: npm run migrate:remote
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Deploy
+        working-directory: ${{ inputs.working-directory }}
         run: npm run deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

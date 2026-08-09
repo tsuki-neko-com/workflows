@@ -25,3 +25,15 @@ jobs:
       d1-database: ""
       deploy-enabled: false
     secrets: inherit
+
+  # working-directory と npm-registry-scope の既定値を変えたケース。既定値のまま
+  # 呼ぶ smoke ジョブを残しているので、両方が緑なら後方互換も保たれている。
+  smoke-subdir:
+    uses: ./.github/workflows/workers.yml
+    with:
+      node-version: "22"
+      d1-database: ""
+      deploy-enabled: false
+      working-directory: fixtures/subdir
+      npm-registry-scope: "@tsuki-neko-com"
+    secrets: inherit

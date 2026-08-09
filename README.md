@@ -92,6 +92,13 @@ gh secret set CLOUDFLARE_ACCOUNT_ID --repo tsuki-neko-com/<repo>
 | `node-version` | string | `"22"` | `actions/setup-node` に渡す Node バージョン |
 | `d1-database` | string | `""` | D1 データベース名。空ならマイグレーションをスキップ |
 | `deploy-enabled` | boolean | `true` | `false` なら `deploy` job を実行しない |
+| `working-directory` | string | `"."` | npm コマンドを実行するディレクトリ。Worker がサブディレクトリにあり、かつ root の npm workspaces に含まれていない場合に指定する |
+| `npm-registry-scope` | string | `""` | GitHub Packages で配布している npm scope（例: `@tsuki-neko-com`）。空でなければ npm を `npm.pkg.github.com` に対して認証する |
+
+`npm-registry-scope` を使う場合、caller 側に `packages: read` 権限が要ります。この
+reusable workflow 側では既に宣言済みなので、caller が `permissions:` を明示的に
+絞っているときだけ追記してください。認証には `secrets.GITHUB_TOKEN` を使うため、
+追加の secret 登録は不要です。
 
 ## npm script 規約
 
