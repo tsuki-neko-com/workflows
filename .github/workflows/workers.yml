@@ -34,7 +34,10 @@ permissions:
   packages: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # 再利用ワークフロー内の github.workflow は caller の名前を指すため、1 つの caller が
+  # 複数のディレクトリに対してこの workflow を呼ぶと、working-directory を含めない限り
+  # 同じグループに入って互いを cancel してしまう。
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.working-directory }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
