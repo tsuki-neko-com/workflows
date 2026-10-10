@@ -2,20 +2,26 @@ name: Cloudflare issue closed
 
 on:
   workflow_call:
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: true
+      CLOUDFLARE_ACCOUNT_ID:
+        required: true
 
 permissions:
   issues: write
 
 jobs:
-  resolve-reminder:
+  resolve:
     if: >-
       github.event_name == 'issues'
       && github.event.action == 'closed'
       && contains(github.event.issue.labels.*.name, 'cloudflare-issue')
     runs-on: ubuntu-latest
     steps:
-      # 差し替え点: Cloudflare が issue のステータスを変える公開 API を出したら、
-      # このステップをコメントから API 呼び出しに差し替える。caller は変えない。
+      # hissue が起票した issue 本文のマーカーから Cloudflare issue ID を取り出し、
+      # Workers Observability の Modify an issue API でステータスを変える。
+      # 失敗したときは手動での変更を促すコメントにフォールバックする。
       - name: resolve
         env:
           GH_TOKEN: ${{ github.token }}
@@ -23,15 +29,22 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_BODY: ${{ github.event.issue.body }}
           STATE_REASON: ${{ github.event.issue.state_reason }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           marker=$(printf '%s\n' "$ISSUE_BODY" | grep -oE '<!-- hissue:key=[^ ]+ worker=[^ ]+ dashboard=[^ ]+ -->' | head -n1 || true)
+          issue_id=$(printf '%s' "$marker" | sed -nE 's/^<!-- hissue:key=cf:([A-Za-z0-9-]+) .*/\1/p')
           worker=$(printf '%s' "$marker" | sed -nE 's/.* worker=([^ ]+) .*/\1/p')
           dashboard=$(printf '%s' "$marker" | sed -nE 's/.* dashboard=([^ ]+) -->.*/\1/p')
+
           if [ "$STATE_REASON" = "not_planned" ]; then
-            action="**Ignored** にするか検討してください"
+            status="ignored"
+            label="Ignored"
           else
-            action="**Resolved** にしてください"
+            status="resolved"
+            label="Resolved"
           fi
+
           if [ -n "$dashboard" ] && [ "$dashboard" != "-" ]; then
             where="[Cloudflare dashboard の issue]($dashboard)"
           elif [ -n "$worker" ]; then
@@ -39,8 +52,32 @@ jobs:
           else
             where="Cloudflare dashboard の該当 Worker の Issues"
           fi
-          printf '%s\n\n%s\n' \
-            "この issue が閉じられました。${where} で対応する Workers issue を ${action}。" \
-            "Cloudflare には issue のステータスを変える公開 API がないため手動です。Resolved の後に再発すると、hissue がこの issue を reopen します。" \
-            > comment.md
+
+          result="skipped: marker not found"
+          if [ -n "$issue_id" ]; then
+            http_code=$(curl -sS -o response.json -w '%{http_code}' -X PATCH \
+              "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/observability/issues/${issue_id}" \
+              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              --data "{\"status\":\"${status}\"}" || echo "000")
+            if [ "$http_code" = "200" ] && [ "$(jq -r '.success' response.json 2>/dev/null)" = "true" ]; then
+              result="ok"
+            else
+              result="failed: HTTP ${http_code} $(jq -c '.errors' response.json 2>/dev/null | head -c 300)"
+            fi
+            rm -f response.json
+          fi
+
+          if [ "$result" = "ok" ]; then
+            printf '%s\n\n%s\n' \
+              "この issue が閉じられたため、${where} を **${label}** にしました。" \
+              "Resolved の後に再発すると、Cloudflare 側は Active に戻り、hissue がこの issue を reopen します。" \
+              > comment.md
+          else
+            echo "::warning::Cloudflare issue status update ${result}"
+            printf '%s\n\n%s\n' \
+              "この issue が閉じられました。Cloudflare issue のステータスを自動で変更できなかったため、${where} で **${label}** にしてください。" \
+              "理由: \`${result}\`" \
+              > comment.md
+          fi
           gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body-file comment.md

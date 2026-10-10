@@ -141,11 +141,16 @@ gh secret set CLOUDFLARE_ACCOUNT_ID --repo tsuki-neko-com/<repo>
 ビルド成果物まで検査対象に入ります。ルールの重大度を変えた理由などは、リポジトリの
 README 側に書いてください。
 
-## Cloudflare issue の close 通知
+## Cloudflare issue の自動 Resolved
 
-[hissue](https://github.com/tsuki-neko-com/hissue) が Cloudflare Workers Issues から起票した GitHub issue (ラベル `cloudflare-issue`) が閉じられたとき、Cloudflare dashboard で Workers issue を Resolved にするよう促すコメントを付けます。Cloudflare には issue のステータスを変える公開 API がないため、Resolved への変更は手動です。
+[hissue](https://github.com/tsuki-neko-com/hissue) が Cloudflare Workers Issues から起票した GitHub issue (ラベル `cloudflare-issue`) が閉じられたとき、対応する Cloudflare の Workers issue のステータスを変更し、結果を issue にコメントします。
 
-hissue の `REPO_MAP` に登録したリポジトリに、`.github/workflows/cloudflare-issue-closed.yml` として以下を貼り付けてください。caller に `permissions: issues: write` が必要です。
+- `completed` などで閉じた場合は `resolved`、`not_planned` で閉じた場合は `ignored` にします。
+- API は Workers Observability の Modify an issue (`PATCH /accounts/{account_id}/workers/observability/issues/{issueId}`) です。人間向けの API リファレンスの目次にはありませんが、[cloudflare/api-schemas](https://github.com/cloudflare/api-schemas) に定義されています。
+- `CLOUDFLARE_API_TOKEN` に **Workers Observability: Edit** が必要です。
+- API が失敗した場合は、dashboard で手動変更を促すコメントにフォールバックします。
+
+hissue の `REPO_MAP` に登録したリポジトリに、`.github/workflows/cloudflare-issue-closed.yml` として以下を貼り付けてください。caller に `permissions: issues: write` と `secrets: inherit` が必要です。
 
 ```yaml
 name: Cloudflare issue closed
@@ -155,11 +160,12 @@ on:
 permissions:
   issues: write
 jobs:
-  notify:
+  resolve:
     uses: tsuki-neko-com/workflows/.github/workflows/cloudflare-issue-closed.yml@v1
+    secrets: inherit
 ```
 
-dashboard へのリンクは、hissue が issue 本文の先頭に置くマーカーから取り出します。形式は `<!-- hissue:key=<issueKey> worker=<workerName> dashboard=<URL または -> -->` で固定です。`not_planned` で閉じた場合は、Resolved ではなく Ignored を検討するよう促します。
+Cloudflare issue ID と dashboard へのリンクは、hissue が issue 本文の先頭に置くマーカーから取り出します。形式は `<!-- hissue:key=cf:<issueId> worker=<workerName> dashboard=<URL または -> -->` で固定です。
 
 ## バージョニング（v1 可動タグ）
 
