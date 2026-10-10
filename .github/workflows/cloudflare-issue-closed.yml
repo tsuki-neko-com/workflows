@@ -1,0 +1,46 @@
+name: Cloudflare issue closed
+
+on:
+  workflow_call:
+
+permissions:
+  issues: write
+
+jobs:
+  resolve-reminder:
+    if: >-
+      github.event_name == 'issues'
+      && github.event.action == 'closed'
+      && contains(github.event.issue.labels.*.name, 'cloudflare-issue')
+    runs-on: ubuntu-latest
+    steps:
+      # 差し替え点: Cloudflare が issue のステータスを変える公開 API を出したら、
+      # このステップをコメントから API 呼び出しに差し替える。caller は変えない。
+      - name: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          STATE_REASON: ${{ github.event.issue.state_reason }}
+        run: |
+          marker=$(printf '%s\n' "$ISSUE_BODY" | grep -oE '<!-- hissue:key=[^ ]+ worker=[^ ]+ dashboard=[^ ]+ -->' | head -n1 || true)
+          worker=$(printf '%s' "$marker" | sed -nE 's/.* worker=([^ ]+) .*/\1/p')
+          dashboard=$(printf '%s' "$marker" | sed -nE 's/.* dashboard=([^ ]+) -->.*/\1/p')
+          if [ "$STATE_REASON" = "not_planned" ]; then
+            action="**Ignored** にするか検討してください"
+          else
+            action="**Resolved** にしてください"
+          fi
+          if [ -n "$dashboard" ] && [ "$dashboard" != "-" ]; then
+            where="[Cloudflare dashboard の issue]($dashboard)"
+          elif [ -n "$worker" ]; then
+            where="Cloudflare dashboard の Workers & Pages > ${worker} > Issues"
+          else
+            where="Cloudflare dashboard の該当 Worker の Issues"
+          fi
+          printf '%s\n\n%s\n' \
+            "この issue が閉じられました。${where} で対応する Workers issue を ${action}。" \
+            "Cloudflare には issue のステータスを変える公開 API がないため手動です。Resolved の後に再発すると、hissue がこの issue を reopen します。" \
+            > comment.md
+          gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body-file comment.md

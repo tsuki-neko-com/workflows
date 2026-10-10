@@ -141,6 +141,26 @@ gh secret set CLOUDFLARE_ACCOUNT_ID --repo tsuki-neko-com/<repo>
 ビルド成果物まで検査対象に入ります。ルールの重大度を変えた理由などは、リポジトリの
 README 側に書いてください。
 
+## Cloudflare issue の close 通知
+
+[hissue](https://github.com/tsuki-neko-com/hissue) が Cloudflare Workers Issues から起票した GitHub issue (ラベル `cloudflare-issue`) が閉じられたとき、Cloudflare dashboard で Workers issue を Resolved にするよう促すコメントを付けます。Cloudflare には issue のステータスを変える公開 API がないため、Resolved への変更は手動です。
+
+hissue の `REPO_MAP` に登録したリポジトリに、`.github/workflows/cloudflare-issue-closed.yml` として以下を貼り付けてください。caller に `permissions: issues: write` が必要です。
+
+```yaml
+name: Cloudflare issue closed
+on:
+  issues:
+    types: [closed]
+permissions:
+  issues: write
+jobs:
+  notify:
+    uses: tsuki-neko-com/workflows/.github/workflows/cloudflare-issue-closed.yml@v1
+```
+
+dashboard へのリンクは、hissue が issue 本文の先頭に置くマーカーから取り出します。形式は `<!-- hissue:key=<issueKey> worker=<workerName> dashboard=<URL または -> -->` で固定です。`not_planned` で閉じた場合は、Resolved ではなく Ignored を検討するよう促します。
+
 ## バージョニング（v1 可動タグ）
 
 利用側は常に `@v1` を参照します。後方互換のある変更は `main` へのマージ後、まず `self-test` が green であることを確認し、`git tag -f v1 && git push -f origin v1` で `v1` を進めてください。`v1` を動かすたびに `v1.<n>` 形式の不変タグも作成します。
