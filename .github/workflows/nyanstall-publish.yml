@@ -1,0 +1,179 @@
+name: Publish release to nyanstall
+
+on:
+  workflow_call:
+    inputs:
+      app:
+        description: nyanstall application name
+        type: string
+        required: true
+      tag:
+        description: GitHub Release tag to publish
+        type: string
+        required: true
+      mode:
+        description: Release artifact format (android or tauri)
+        type: string
+        required: true
+      asset-pattern:
+        description: GitHub Release asset pattern for Android APKs
+        type: string
+        required: false
+        default: '*.apk'
+      version-code:
+        description: Android version code
+        type: string
+        required: false
+      ingest-url:
+        description: nyanstall ingest API base URL
+        type: string
+        required: false
+        default: https://ingest.nyanstall.tsuki-neko.com
+    secrets:
+      NYANSTALL_CF_API_TOKEN:
+        required: true
+      NYANSTALL_CF_ACCOUNT_ID:
+        required: true
+      NYANSTALL_ACCESS_CLIENT_ID:
+        required: true
+      NYANSTALL_ACCESS_CLIENT_SECRET:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required secrets and inputs
+        env:
+          CF_API_TOKEN: ${{ secrets.NYANSTALL_CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.NYANSTALL_CF_ACCOUNT_ID }}
+          ACCESS_CLIENT_ID: ${{ secrets.NYANSTALL_ACCESS_CLIENT_ID }}
+          ACCESS_CLIENT_SECRET: ${{ secrets.NYANSTALL_ACCESS_CLIENT_SECRET }}
+          MODE: ${{ inputs.mode }}
+          VERSION_CODE: ${{ inputs.version-code }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "$CF_API_TOKEN" ] || missing="$missing NYANSTALL_CF_API_TOKEN"
+          [ -n "$CF_ACCOUNT_ID" ] || missing="$missing NYANSTALL_CF_ACCOUNT_ID"
+          [ -n "$ACCESS_CLIENT_ID" ] || missing="$missing NYANSTALL_ACCESS_CLIENT_ID"
+          [ -n "$ACCESS_CLIENT_SECRET" ] || missing="$missing NYANSTALL_ACCESS_CLIENT_SECRET"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing required secret(s):$missing"
+            exit 1
+          fi
+          case "$MODE" in android|tauri) ;; *) echo "::error::mode must be android or tauri"; exit 1 ;; esac
+          if [ "$MODE" = android ] && [[ ! "$VERSION_CODE" =~ ^[0-9]+$ ]]; then
+            echo "::error::version-code is required for android and must be an integer"
+            exit 1
+          fi
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          MODE: ${{ inputs.mode }}
+          ASSET_PATTERN: ${{ inputs.asset-pattern }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          if [ "$MODE" = android ]; then
+            gh release download "$TAG" --repo "$GH_REPOSITORY" --pattern "$ASSET_PATTERN" --dir release-assets
+            count=$(find release-assets -maxdepth 1 -type f -name '*.apk' | wc -l)
+            [ "$count" -eq 1 ] || { echo "::error::Expected exactly one APK, found $count"; exit 1; }
+          else
+            gh release download "$TAG" --repo "$GH_REPOSITORY" --pattern nyanstall-artifacts.json --dir release-assets
+            test -f release-assets/nyanstall-artifacts.json || { echo '::error::Release is missing nyanstall-artifacts.json'; exit 1; }
+            jq -er '.artifacts | select(type == "array" and length > 0) | .[].file' release-assets/nyanstall-artifacts.json | while IFS= read -r file; do
+              gh release download "$TAG" --repo "$GH_REPOSITORY" --pattern "$file" --dir release-assets
+              if jq -e --arg file "$file" '.artifacts[] | select(.file == $file and .updater == true)' release-assets/nyanstall-artifacts.json >/dev/null; then
+                sig=$(jq -r --arg file "$file" '.artifacts[] | select(.file == $file) | .sig_file // empty' release-assets/nyanstall-artifacts.json)
+                [ -n "$sig" ] || { echo "::error::Missing sig_file for updater artifact $file"; exit 1; }
+                gh release download "$TAG" --repo "$GH_REPOSITORY" --pattern "$sig" --dir release-assets
+              fi
+            done
+          fi
+      - name: Preflight and publish release
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.NYANSTALL_CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.NYANSTALL_CF_ACCOUNT_ID }}
+          ACCESS_CLIENT_ID: ${{ secrets.NYANSTALL_ACCESS_CLIENT_ID }}
+          ACCESS_CLIENT_SECRET: ${{ secrets.NYANSTALL_ACCESS_CLIENT_SECRET }}
+          APP: ${{ inputs.app }}
+          TAG: ${{ inputs.tag }}
+          MODE: ${{ inputs.mode }}
+          VERSION_CODE: ${{ inputs.version-code }}
+          INGEST_URL: ${{ inputs.ingest-url }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          [[ "$version" != "$TAG" ]] || { echo '::error::tag must start with v'; exit 1; }
+          api="${INGEST_URL%/}/v1/ingest/${APP}/releases/${version}"
+          status=$(curl --silent --show-error --output preflight.json --write-out '%{http_code}' \
+            -H "CF-Access-Client-Id: $ACCESS_CLIENT_ID" \
+            -H "CF-Access-Client-Secret: $ACCESS_CLIENT_SECRET" "$api")
+          if [ "$status" = 200 ]; then
+            echo "Release $APP $version is already registered; skipping."
+            exit 0
+          elif [ "$status" != 404 ]; then
+            cat preflight.json
+            echo "::error::Ingest preflight returned HTTP $status"
+            exit 1
+          fi
+
+          release=$(gh release view "$TAG" --repo "$GH_REPOSITORY" --json body,url,publishedAt)
+          notes=$(jq -r '.body // ""' <<< "$release")
+          source_url=$(jq -r '.url' <<< "$release")
+          published_at=$(jq -r '.publishedAt' <<< "$release")
+          artifacts='[]'
+          if [ "$MODE" = android ]; then
+            file=$(find release-assets -maxdepth 1 -type f -name '*.apk' -printf '%f\n')
+            local_file="release-assets/$file"
+            size=$(stat -c '%s' "$local_file")
+            sha=$(sha256sum "$local_file" | cut -d ' ' -f1)
+            key="apps/${APP}/${version}/${file}"
+            npx --yes wrangler@4 r2 object put "nyanstall/${key}" --remote --file "$local_file" --content-type application/vnd.android.package-archive
+            artifacts=$(jq -n --arg file "$file" --arg key "$key" --arg sha "$sha" --argjson size "$size" '[{target:"android",arch:"any",kind:"apk",updater:false,filename:$file,r2_key:$key,size:$size,sha256:$sha,signature:null}]')
+          else
+            while IFS= read -r item; do
+              file=$(jq -r '.file' <<< "$item")
+              target=$(jq -r '.target' <<< "$item")
+              arch=$(jq -r '.arch' <<< "$item")
+              kind=$(jq -r '.kind' <<< "$item")
+              updater=$(jq -r '.updater' <<< "$item")
+              local_file="release-assets/$file"
+              test -f "$local_file" || { echo "::error::Missing release asset $file"; exit 1; }
+              size=$(stat -c '%s' "$local_file")
+              sha=$(sha256sum "$local_file" | cut -d ' ' -f1)
+              key="apps/${APP}/${version}/${file}"
+              content_type=$(file --brief --mime-type "$local_file")
+              npx --yes wrangler@4 r2 object put "nyanstall/${key}" --remote --file "$local_file" --content-type "$content_type"
+              signature=null
+              if [ "$updater" = true ]; then
+                sig_file=$(jq -r '.sig_file' <<< "$item")
+                signature=$(cat "release-assets/$sig_file")
+              fi
+              one=$(jq -n --arg target "$target" --arg arch "$arch" --arg kind "$kind" --arg file "$file" --arg key "$key" --arg sha "$sha" --argjson size "$size" --argjson updater "$updater" --arg signature "$signature" '{target:$target,arch:$arch,kind:$kind,updater:$updater,filename:$file,r2_key:$key,size:$size,sha256:$sha,signature:(if $signature == "" then null else $signature end)}')
+              artifacts=$(jq -c --argjson one "$one" '. + [$one]' <<< "$artifacts")
+            done < <(jq -c '.artifacts[]' release-assets/nyanstall-artifacts.json)
+          fi
+          payload=$(jq -n --arg version "$version" --argjson version_code "${VERSION_CODE:-null}" --arg tag "$TAG" --arg notes "$notes" --arg source_url "$source_url" --arg published_at "$published_at" --argjson artifacts "$artifacts" \
+            '{version:$version,tag:$tag,notes:$notes,source_url:$source_url,published_at:$published_at,artifacts:$artifacts} + (if $version_code == null then {} else {version_code:$version_code} end)')
+          printf '%s\n' "$payload" > payload.json
+          status=$(curl --silent --show-error --output response.json --write-out '%{http_code}' \
+            -X POST -H 'Content-Type: application/json' \
+            -H "CF-Access-Client-Id: $ACCESS_CLIENT_ID" \
+            -H "CF-Access-Client-Secret: $ACCESS_CLIENT_SECRET" \
+            --data-binary @payload.json "${INGEST_URL%/}/v1/ingest/${APP}/releases")
+          if [ "$status" = 201 ] || [ "$status" = 200 ]; then
+            cat response.json
+          else
+            cat response.json
+            echo "::error::Ingest POST returned HTTP $status"
+            exit 1
+          fi

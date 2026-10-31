@@ -172,3 +172,43 @@ Cloudflare issue ID と dashboard へのリンクは、hissue が issue 本文�
 利用側は常に `@v1` を参照します。後方互換のある変更は `main` へのマージ後、まず `self-test` が green であることを確認し、`git tag -f v1 && git push -f origin v1` で `v1` を進めてください。`v1` を動かすたびに `v1.<n>` 形式の不変タグも作成します。
 
 互換性を壊す変更のときだけ `v2` を切り、利用側の移行が完了するまで `v1` を残します。問題が起きた場合は `v1` を直前の SHA へ戻すことで、すべての利用リポジトリを即時復旧できます。
+
+## nyanstall への Release 公開
+
+アプリの Release asset を nyanstall の R2 と ingest API に登録する reusable workflow です。caller は `.github/workflows/nyanstall-publish.yml` から呼び出します。
+
+```yaml
+name: Publish to nyanstall
+on:
+  release:
+    types: [published]
+jobs:
+  publish:
+    uses: tsuki-neko-com/workflows/.github/workflows/nyanstall-publish.yml@v1
+    with:
+      app: akscrobble
+      tag: ${{ github.event.release.tag_name }}
+      mode: android
+      version-code: "1000003"
+    secrets: inherit
+```
+
+`NYANSTALL_CF_API_TOKEN`、`NYANSTALL_CF_ACCOUNT_ID`、`NYANSTALL_ACCESS_CLIENT_ID`、`NYANSTALL_ACCESS_CLIENT_SECRET` を各アプリの repository secret に登録してください。Access token はアプリごとの Service Token を使います。Android は `version-code` が必須で、Release に `*.apk` に一致する APK がちょうど 1 つ必要です。Tauri は `mode: tauri` とし、Release asset に `nyanstall-artifacts.json` と各項目のファイルを添付します。updater 対象には署名ファイルも必要です。
+
+署名ビルドで鍵束が必要な場合は composite action を呼び出します。復号した鍵素材は job の最後に削除してください。
+
+```yaml
+- uses: tsuki-neko-com/workflows/actions/nyanstall-key@v1
+  id: keys
+  with:
+    app: akscrobble
+    purpose: android-release
+    api-token: ${{ secrets.NYANSTALL_CF_API_TOKEN }}
+    account-id: ${{ secrets.NYANSTALL_CF_ACCOUNT_ID }}
+    age-identity: ${{ secrets.NYANSTALL_AGE_IDENTITY }}
+- name: Remove signing keys
+  if: always()
+  run: rm -rf "${{ steps.keys.outputs.dir }}"
+```
+
+後方互換のある変更を main へマージした後、`self-test` の green を確認してから `v1` を進め、不変タグも作成します（現在の次のタグは `v1.4`）。
