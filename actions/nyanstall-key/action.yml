@@ -1,0 +1,78 @@
+name: Get nyanstall signing key bundle
+description: Download and decrypt a signing key bundle from nyanstall-keys
+inputs:
+  app:
+    description: nyanstall application name
+    required: true
+  purpose:
+    description: Key bundle purpose
+    required: true
+  out-dir:
+    description: Directory where the bundle is extracted
+    required: false
+    default: ${{ runner.temp }}/nyanstall-key
+  api-token:
+    description: Cloudflare API token with R2 access
+    required: true
+  account-id:
+    description: Cloudflare account ID
+    required: true
+  age-identity:
+    description: age identity used to decrypt the bundle
+    required: true
+outputs:
+  dir:
+    description: Directory containing the decrypted bundle
+    value: ${{ steps.unpack.outputs.dir }}
+runs:
+  using: composite
+  steps:
+    - name: Install age
+      shell: bash
+      run: |
+        set -euo pipefail
+        case "$RUNNER_OS" in
+          Linux)
+            sudo apt-get update -qq
+            sudo apt-get install -y age
+            ;;
+          macOS)
+            brew install age
+            ;;
+          Windows)
+            version="v1.2.1"
+            archive="$RUNNER_TEMP/age.zip"
+            curl --fail --silent --show-error --location \
+              "https://github.com/FiloSottile/age/releases/download/${version}/age-${version}-windows-amd64.zip" \
+              --output "$archive"
+            unzip -q "$archive" -d "$RUNNER_TEMP/age-bin"
+            echo "$RUNNER_TEMP/age-bin/age" >> "$GITHUB_PATH"
+            ;;
+          *) echo "Unsupported runner OS: $RUNNER_OS" >&2; exit 1 ;;
+        esac
+    - name: Download and decrypt key bundle
+      id: unpack
+      shell: bash
+      env:
+        APP: ${{ inputs.app }}
+        PURPOSE: ${{ inputs.purpose }}
+        OUT_DIR: ${{ inputs.out-dir }}
+        AGE_IDENTITY: ${{ inputs.age-identity }}
+        CLOUDFLARE_API_TOKEN: ${{ inputs.api-token }}
+        CLOUDFLARE_ACCOUNT_ID: ${{ inputs.account-id }}
+      run: |
+        set -euo pipefail
+        umask 077
+        tmp="$RUNNER_TEMP/nyanstall-key-${RANDOM}-${RANDOM}"
+        mkdir -p "$OUT_DIR"
+        identity="$tmp.identity"
+        encrypted="$tmp.tar.age"
+        trap 'rm -f "$identity" "$encrypted" "$tmp.tar"' EXIT
+        printf '%s\n' "$AGE_IDENTITY" > "$identity"
+        npx --yes wrangler@4 r2 object get "nyanstall-keys/${APP}/${PURPOSE}.tar.age" \
+          --remote --file "$encrypted"
+        age --decrypt --identity "$identity" --output "$tmp.tar" "$encrypted"
+        rm -f "$identity" "$encrypted"
+        tar -xf "$tmp.tar" -C "$OUT_DIR"
+        rm -f "$tmp.tar"
+        echo "dir=$OUT_DIR" >> "$GITHUB_OUTPUT"
