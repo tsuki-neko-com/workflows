@@ -155,7 +155,7 @@ jobs:
           case "$SOURCE" in github-release|artifact) ;; *) echo "::error::source must be github-release or artifact"; exit 1 ;; esac
           case "$CHANNEL" in stable|beta) ;; *) echo "::error::channel must be stable or beta"; exit 1 ;; esac
           if [ "$SOURCE" = artifact ]; then
-            [ -n "$ARTIFACT_NAME" ] && [ -n "$INPUT_VERSION" ] || { echo '::error::artifact-name and version are required'; exit 1; }
+            if [ -z "$ARTIFACT_NAME" ] || [ -z "$INPUT_VERSION" ]; then echo '::error::artifact-name and version are required'; exit 1; fi
             version="$INPUT_VERSION"
           else
             [ -z "$INPUT_VERSION" ] || { echo '::error::version must be empty for github-release'; exit 1; }
@@ -221,7 +221,7 @@ jobs:
               test -f "release-assets/$file" || { echo "::error::Missing release asset $file"; exit 1; }
               if [ "$(jq -r '.updater' <<< "$item")" = true ]; then
                 sig=$(jq -r '.sig_file // empty' <<< "$item")
-                [ -n "$sig" ] && test -f "release-assets/$sig" || { echo "::error::Missing signature for $file"; exit 1; }
+                if [ -z "$sig" ] || [ ! -f "release-assets/$sig" ]; then echo "::error::Missing signature for $file"; exit 1; fi
               fi
             done < <(jq -c '.artifacts[]' release-assets/nyanstall-artifacts.json)
           fi
