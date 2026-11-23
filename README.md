@@ -195,6 +195,56 @@ jobs:
 
 `NYANSTALL_CF_API_TOKEN`、`NYANSTALL_CF_ACCOUNT_ID`、`NYANSTALL_ACCESS_CLIENT_ID`、`NYANSTALL_ACCESS_CLIENT_SECRET` を各アプリの repository secret に登録してください。Access token はアプリごとの Service Token を使います。Android は `version-code` が必須で、Release に `*.apk` に一致する APK がちょうど 1 つ必要です。Tauri は `mode: tauri` とし、Release asset に `nyanstall-artifacts.json` と各項目のファイルを添付します。updater 対象には署名ファイルも必要です。
 
+### 直接取り込みと追加 inputs
+
+| input | 既定値 | 意味 |
+|---|---|---|
+| `source` | `github-release` | `github-release` または同じ run の `artifact` |
+| `artifact-name` | 空 | `source: artifact` で必須の artifact 名 |
+| `version` | 空 | artifact では必須。GitHub Release では指定せず、`tag` の先頭の `v` を除いた値を使う |
+| `channel` | `stable` | `stable` または `beta`。stable は通常版、beta は prerelease が必要 |
+| `git-sha` / `git-ref` | 空 | ソースの commit SHA / ref。artifact では省略時に `github.sha` / `github.ref_name` を使う |
+| `notes` | 空 | artifact の release notes |
+| `source-url` | 空 | artifact の参照 URL。省略時はこの Actions run の URL |
+| `product` / `product-version` | 空 | 両方指定すると公開後に台帳の対象 app を `published` に更新する |
+| `dry-run` | `false` | `true` なら送信せず payload と要求を出力する |
+
+版は `1.2.3` または `1.2.3-beta.1` の形式です。GitHub Release では `tag` を `v` で始めます。artifact では `tag` に `beta/0.2.14-beta.1` のような文字列を使えます。`dry-run` は R2 へのアップロード、preflight、ingest、台帳更新を行いません。workflow の outputs は `payload`、`version`、`release-id`、dry-run の台帳 PATCH を表す `target-request` です。
+
+次の例では同じ run の build job が APK をアップロードし、publish job がそれを取り込みます。caller の権限は `contents: read` で足ります。
+
+```yaml
+name: Publish beta
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: ./build-android.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-beta
+          path: dist/*.apk
+  publish:
+    needs: build
+    uses: tsuki-neko-com/workflows/.github/workflows/nyanstall-publish.yml@v1
+    with:
+      app: my-android-app
+      mode: android
+      tag: beta/0.2.14-beta.1
+      source: artifact
+      artifact-name: android-beta
+      version: 0.2.14-beta.1
+      channel: beta
+      version-code: "201401"
+    secrets: inherit
+```
+
+4 つの secret は dry-run の self-test が secret なしで呼べるよう workflow 定義上 `required: false` です。実際の公開では従来どおりすべて必須で、空なら実行時に失敗します。
+
 署名ビルドで鍵束が必要な場合は composite action を呼び出します。復号した鍵素材は job の最後に削除してください。
 
 ```yaml
@@ -210,5 +260,88 @@ jobs:
   if: always()
   run: rm -rf "${{ steps.keys.outputs.dir }}"
 ```
+
+## nyanstall の台帳
+
+`tsuki-neko-com/workflows/actions/nyanstall-ledger@v1` は呼び出し元の runner で動く composite action です。依存は bash、curl、jq のみで、self-hosted Mac でも動きます。Mac の runner には事前に jq をインストールしてください。通常の呼び出しには Access の client ID と secret が必要です。
+
+| input | 意味 |
+|---|---|
+| `command` | 必須。下表の操作 |
+| `product` | 台帳の product 識別子（`record-ios-release` 以外で必須） |
+| `app` | 対象 app（操作に応じて必須） |
+| `version` | 対象の product version（`get-version`、`update-target` で必須） |
+| `channel` | `last-success` のチャネル |
+| `pr-number` | `pr-betas` の PR 番号 |
+| `body` | POST / PATCH に渡す JSON |
+| `ingest-url` | API の base URL。既定は `https://ingest.nyanstall.tsuki-neko.com` |
+| `access-client-id` / `access-client-secret` | Cloudflare Access の認証情報。dry-run 以外で必須 |
+| `dry-run` | 既定 `false`。`true` で HTTP を送らず要求を返す |
+
+outputs は `status`（HTTP status、または `dry-run`）と `response`（コンパクトな JSON 応答、dry-run では `method`、`url`、`body` を含む要求）です。`get-version` の 404 は正常な結果として返されます。
+
+| command | 操作 | 必要な主な入力 |
+|---|---|---|
+| `next-beta` | beta 番号を払い出す | `product`, `body` (`base_version`) |
+| `create-version` | 版を作成する | `product`, `body` |
+| `get-version` | 版を取得する | `product`, `version` |
+| `update-target` | app の状態を更新する | `product`, `version`, `app`, `body` |
+| `last-success` | 前回成功した版を取得する | `product`, `app`, `channel` |
+| `ios-build-number` | iOS ビルド番号を払い出す | `product`, `body` (`app`, 任意で `version`) |
+| `pr-betas` | PR に関連する beta を取得する | `product`, `pr-number` |
+| `record-ios-release` | artifact のない iOS release を記録する | `app`, `body` |
+
+例えば、次の各 step に `access-client-id: ${{ secrets.NYANSTALL_ACCESS_CLIENT_ID }}` と `access-client-secret: ${{ secrets.NYANSTALL_ACCESS_CLIENT_SECRET }}` を `with` に追加して使います。応答の値は `steps.<id>.outputs.response` を `fromJSON` で参照できます。
+
+```yaml
+- id: beta
+  uses: tsuki-neko-com/workflows/actions/nyanstall-ledger@v1
+  with:
+    command: next-beta
+    product: my-product
+    body: '{"base_version":"0.2.14"}'
+    access-client-id: ${{ secrets.NYANSTALL_ACCESS_CLIENT_ID }}
+    access-client-secret: ${{ secrets.NYANSTALL_ACCESS_CLIENT_SECRET }}
+- id: version
+  uses: tsuki-neko-com/workflows/actions/nyanstall-ledger@v1
+  with:
+    command: create-version
+    product: my-product
+    body: >-
+      {"version":"0.2.14-beta.1","channel":"beta","git_sha":"0123456789abcdef0123456789abcdef01234567","git_ref":"main","tag":"beta/0.2.14-beta.1","prs":[],"targets":[{"app":"my-ios-app","state":"pending"}]}
+    access-client-id: ${{ secrets.NYANSTALL_ACCESS_CLIENT_ID }}
+    access-client-secret: ${{ secrets.NYANSTALL_ACCESS_CLIENT_SECRET }}
+- uses: tsuki-neko-com/workflows/actions/nyanstall-ledger@v1
+  with:
+    command: update-target
+    product: my-product
+    version: 0.2.14-beta.1
+    app: my-ios-app
+    body: '{"state":"building"}'
+    access-client-id: ${{ secrets.NYANSTALL_ACCESS_CLIENT_ID }}
+    access-client-secret: ${{ secrets.NYANSTALL_ACCESS_CLIENT_SECRET }}
+- id: ios-number
+  uses: tsuki-neko-com/workflows/actions/nyanstall-ledger@v1
+  with:
+    command: ios-build-number
+    product: my-product
+    body: '{"app":"my-ios-app","version":"0.2.14-beta.1"}'
+    access-client-id: ${{ secrets.NYANSTALL_ACCESS_CLIENT_ID }}
+    access-client-secret: ${{ secrets.NYANSTALL_ACCESS_CLIENT_SECRET }}
+- uses: tsuki-neko-com/workflows/actions/nyanstall-ledger@v1
+  with:
+    command: record-ios-release
+    app: my-ios-app
+    body: >-
+      {"version":"0.2.14-beta.1","version_code":${{ fromJSON(steps.ios-number.outputs.response).build_number }},"tag":"beta/0.2.14-beta.1","notes":"","source_url":"https://example.com/build","published_at":"2026-11-23T00:00:00Z","channel":"beta","artifacts":[]}
+    access-client-id: ${{ secrets.NYANSTALL_ACCESS_CLIENT_ID }}
+    access-client-secret: ${{ secrets.NYANSTALL_ACCESS_CLIENT_SECRET }}
+```
+
+実際の利用では払い出された `version`、commit SHA、日時、URL をビルドの値に置き換えてください。状態には `skipped`、`pending`、`waiting`、`building`、`uploaded`、`published`、`failed` を使います。
+
+## self-test
+
+`self-test.yml` は actionlint と既存の `smoke`、`smoke-subdir` に加え、Android と Tauri の artifact を beta の dry-run で公開し、payload と台帳 PATCH の要求を検査します。`ledger-action` job は ledger のテストと action の dry-run 出力を検査します。
 
 後方互換のある変更を main へマージした後、`self-test` の green を確認してから `v1` を進め、不変タグも作成します（現在の次のタグは `v1.4`）。

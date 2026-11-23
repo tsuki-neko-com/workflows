@@ -29,15 +29,83 @@ on:
         type: string
         required: false
         default: https://ingest.nyanstall.tsuki-neko.com
+      source:
+        description: Release source
+        type: string
+        required: false
+        default: github-release
+      artifact-name:
+        description: Artifact name
+        type: string
+        required: false
+        default: ''
+      version:
+        description: Artifact version
+        type: string
+        required: false
+        default: ''
+      channel:
+        description: Release channel
+        type: string
+        required: false
+        default: stable
+      git-sha:
+        description: Source commit SHA
+        type: string
+        required: false
+        default: ''
+      git-ref:
+        description: Source Git ref
+        type: string
+        required: false
+        default: ''
+      notes:
+        description: Release notes
+        type: string
+        required: false
+        default: ''
+      source-url:
+        description: Release source URL
+        type: string
+        required: false
+        default: ''
+      product:
+        description: Ledger product name
+        type: string
+        required: false
+        default: ''
+      product-version:
+        description: Ledger product version
+        type: string
+        required: false
+        default: ''
+      dry-run:
+        description: Build payload without publishing
+        type: boolean
+        required: false
+        default: false
+    outputs:
+      target-request:
+        description: Ledger PATCH request for dry run
+        value: ${{ jobs.publish.outputs.target-request }}
+      payload:
+        description: Published payload
+        value: ${{ jobs.publish.outputs.payload }}
+      release-id:
+        description: Published release-id
+        value: ${{ jobs.publish.outputs.release-id }}
+      version:
+        description: Published version
+        value: ${{ jobs.publish.outputs.version }}
     secrets:
       NYANSTALL_CF_API_TOKEN:
-        required: true
+        required: false
       NYANSTALL_CF_ACCOUNT_ID:
-        required: true
+        required: false
       NYANSTALL_ACCESS_CLIENT_ID:
-        required: true
+        required: false
       NYANSTALL_ACCESS_CLIENT_SECRET:
-        required: true
+        required: false
 
 permissions:
   contents: read
@@ -45,6 +113,11 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    outputs:
+      target-request: ${{ steps.publish.outputs.target-request }}
+      payload: ${{ steps.publish.outputs.payload }}
+      release-id: ${{ steps.publish.outputs.release-id }}
+      version: ${{ steps.publish.outputs.version }}
     steps:
       - name: Check required secrets and inputs
         env:
@@ -54,16 +127,44 @@ jobs:
           ACCESS_CLIENT_SECRET: ${{ secrets.NYANSTALL_ACCESS_CLIENT_SECRET }}
           MODE: ${{ inputs.mode }}
           VERSION_CODE: ${{ inputs.version-code }}
+          SOURCE: ${{ inputs.source }}
+          ARTIFACT_NAME: ${{ inputs.artifact-name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          CHANNEL: ${{ inputs.channel }}
+          TAG: ${{ inputs.tag }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          PRODUCT: ${{ inputs.product }}
+          PRODUCT_VERSION: ${{ inputs.product-version }}
         run: |
           set -euo pipefail
           missing=""
-          [ -n "$CF_API_TOKEN" ] || missing="$missing NYANSTALL_CF_API_TOKEN"
-          [ -n "$CF_ACCOUNT_ID" ] || missing="$missing NYANSTALL_CF_ACCOUNT_ID"
-          [ -n "$ACCESS_CLIENT_ID" ] || missing="$missing NYANSTALL_ACCESS_CLIENT_ID"
-          [ -n "$ACCESS_CLIENT_SECRET" ] || missing="$missing NYANSTALL_ACCESS_CLIENT_SECRET"
-          if [ -n "$missing" ]; then
-            echo "::error::Missing required secret(s):$missing"
+          if [ "$DRY_RUN" != true ]; then
+            [ -n "$CF_API_TOKEN" ] || missing="$missing NYANSTALL_CF_API_TOKEN"
+            [ -n "$CF_ACCOUNT_ID" ] || missing="$missing NYANSTALL_CF_ACCOUNT_ID"
+            [ -n "$ACCESS_CLIENT_ID" ] || missing="$missing NYANSTALL_ACCESS_CLIENT_ID"
+            [ -n "$ACCESS_CLIENT_SECRET" ] || missing="$missing NYANSTALL_ACCESS_CLIENT_SECRET"
+            if [ -n "$missing" ]; then
+              echo "::error::Missing required secret(s):$missing"
+              exit 1
+            fi
+          fi
+          if { [ -n "$PRODUCT" ] && [ -z "$PRODUCT_VERSION" ]; } || { [ -z "$PRODUCT" ] && [ -n "$PRODUCT_VERSION" ]; }; then
+            echo "::error::product and product-version must both be specified or both be empty"
             exit 1
+          fi
+          case "$SOURCE" in github-release|artifact) ;; *) echo "::error::source must be github-release or artifact"; exit 1 ;; esac
+          case "$CHANNEL" in stable|beta) ;; *) echo "::error::channel must be stable or beta"; exit 1 ;; esac
+          if [ "$SOURCE" = artifact ]; then
+            if [ -z "$ARTIFACT_NAME" ] || [ -z "$INPUT_VERSION" ]; then echo '::error::artifact-name and version are required'; exit 1; fi
+            version="$INPUT_VERSION"
+          else
+            [ -z "$INPUT_VERSION" ] || { echo '::error::version must be empty for github-release'; exit 1; }
+            version="${TAG#v}"
+            [ "$version" != "$TAG" ] || { echo '::error::tag must start with v'; exit 1; }
+          fi
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]] || { echo '::error::invalid version'; exit 1; }
+          if { [ "$CHANNEL" = stable ] && [[ "$version" == *-* ]]; } || { [ "$CHANNEL" = beta ] && [[ "$version" != *-* ]]; }; then
+            echo '::error::channel does not match version'; exit 1
           fi
           case "$MODE" in android|tauri) ;; *) echo "::error::mode must be android or tauri"; exit 1 ;; esac
           if [ "$MODE" = android ] && [[ ! "$VERSION_CODE" =~ ^[0-9]+$ ]]; then
@@ -71,6 +172,7 @@ jobs:
             exit 1
           fi
       - name: Download release assets
+        if: inputs.source == 'github-release'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPOSITORY: ${{ github.repository }}
@@ -96,7 +198,35 @@ jobs:
               fi
             done
           fi
+      - name: Download artifact assets
+        if: inputs.source == 'artifact'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: release-assets
+      - name: Validate artifact assets
+        if: inputs.source == 'artifact'
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = android ]; then
+            count=$(find release-assets -maxdepth 1 -type f -name '*.apk' | wc -l)
+            [ "$count" -eq 1 ] || { echo "::error::Expected exactly one APK, found $count"; exit 1; }
+          else
+            test -f release-assets/nyanstall-artifacts.json || { echo '::error::Missing nyanstall-artifacts.json'; exit 1; }
+            jq -e '.artifacts | type == "array" and length > 0' release-assets/nyanstall-artifacts.json >/dev/null
+            while IFS= read -r item; do
+              file=$(jq -r '.file' <<< "$item")
+              test -f "release-assets/$file" || { echo "::error::Missing release asset $file"; exit 1; }
+              if [ "$(jq -r '.updater' <<< "$item")" = true ]; then
+                sig=$(jq -r '.sig_file // empty' <<< "$item")
+                if [ -z "$sig" ] || [ ! -f "release-assets/$sig" ]; then echo "::error::Missing signature for $file"; exit 1; fi
+              fi
+            done < <(jq -c '.artifacts[]' release-assets/nyanstall-artifacts.json)
+          fi
       - name: Preflight and publish release
+        id: publish
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.NYANSTALL_CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.NYANSTALL_CF_ACCOUNT_ID }}
@@ -109,27 +239,84 @@ jobs:
           INGEST_URL: ${{ inputs.ingest-url }}
           GH_TOKEN: ${{ github.token }}
           GH_REPOSITORY: ${{ github.repository }}
+          SOURCE: ${{ inputs.source }}
+          INPUT_VERSION: ${{ inputs.version }}
+          CHANNEL: ${{ inputs.channel }}
+          INPUT_GIT_SHA: ${{ inputs.git-sha }}
+          INPUT_GIT_REF: ${{ inputs.git-ref }}
+          DEFAULT_GIT_SHA: ${{ github.sha }}
+          DEFAULT_GIT_REF: ${{ github.ref_name }}
+          INPUT_NOTES: ${{ inputs.notes }}
+          INPUT_SOURCE_URL: ${{ inputs.source-url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          PRODUCT: ${{ inputs.product }}
+          PRODUCT_VERSION: ${{ inputs.product-version }}
         run: |
           set -euo pipefail
-          version="${TAG#v}"
-          [[ "$version" != "$TAG" ]] || { echo '::error::tag must start with v'; exit 1; }
-          api="${INGEST_URL%/}/v1/ingest/${APP}/releases/${version}"
-          status=$(curl --silent --show-error --output preflight.json --write-out '%{http_code}' \
-            -H "CF-Access-Client-Id: $ACCESS_CLIENT_ID" \
-            -H "CF-Access-Client-Secret: $ACCESS_CLIENT_SECRET" "$api")
-          if [ "$status" = 200 ]; then
-            echo "Release $APP $version is already registered; skipping."
-            exit 0
-          elif [ "$status" != 404 ]; then
-            cat preflight.json
-            echo "::error::Ingest preflight returned HTTP $status"
-            exit 1
+          update_target() {
+            [ -n "$PRODUCT" ] || return 0
+            local release_id="$1" target_url body request status
+            target_url="${INGEST_URL%/}/v1/ingest/products/${PRODUCT}/versions/${PRODUCT_VERSION}/targets/${APP}"
+            body=$(jq -cn --argjson release_id "$release_id" '{state:"published",release_id:$release_id}')
+            if [ "$DRY_RUN" = true ]; then
+              request=$(jq -cn --arg url "$target_url" --argjson body "$body" '{method:"PATCH",url:$url,body:$body}')
+              echo "target-request=$request" >> "$GITHUB_OUTPUT"
+              echo "$request"
+              return 0
+            fi
+            printf '%s\n' "$body" > target-payload.json
+            status=$(curl --silent --show-error --output target-response.json --write-out '%{http_code}' \
+              -X PATCH -H 'Content-Type: application/json' -H "@$headers" \
+              --data-binary @target-payload.json "$target_url")
+            if [ "$status" != 200 ]; then
+              cat target-response.json
+              echo "::error::Ledger PATCH returned HTTP $status"
+              exit 1
+            fi
+          }
+          if [ "$SOURCE" = artifact ]; then
+            version="$INPUT_VERSION"
+            notes="$INPUT_NOTES"
+            source_url="${INPUT_SOURCE_URL:-$RUN_URL}"
+            published_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            git_sha="${INPUT_GIT_SHA:-$DEFAULT_GIT_SHA}"
+            git_ref="${INPUT_GIT_REF:-$DEFAULT_GIT_REF}"
+          else
+            version="${TAG#v}"
+            git_sha="$INPUT_GIT_SHA"
+            git_ref="$INPUT_GIT_REF"
           fi
-
-          release=$(gh release view "$TAG" --repo "$GH_REPOSITORY" --json body,url,publishedAt)
-          notes=$(jq -r '.body // ""' <<< "$release")
-          source_url=$(jq -r '.url' <<< "$release")
-          published_at=$(jq -r '.publishedAt' <<< "$release")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          api="${INGEST_URL%/}/v1/ingest/${APP}/releases/${version}"
+          if [ "$DRY_RUN" != true ]; then
+            umask 077
+            headers=$(mktemp)
+            trap 'rm -f "$headers"' EXIT
+            printf 'CF-Access-Client-Id: %s\nCF-Access-Client-Secret: %s\n' "$ACCESS_CLIENT_ID" "$ACCESS_CLIENT_SECRET" > "$headers"
+            status=$(curl --silent --show-error --output preflight.json --write-out '%{http_code}' -H "@$headers" "$api")
+            if [ "$status" = 200 ]; then
+              echo "release-id=$(jq -r '.release_id' preflight.json)" >> "$GITHUB_OUTPUT"
+              if [ -n "$PRODUCT" ]; then
+                release_id=$(jq -c -e '.release_id | select(. != null)' preflight.json)
+                update_target "$release_id"
+              fi
+              echo "Release $APP $version is already registered; skipping."
+              exit 0
+            elif [ "$status" != 404 ]; then
+              cat preflight.json
+              echo "::error::Ingest preflight returned HTTP $status"
+              exit 1
+            fi
+          else
+            echo "GET $api"
+          fi
+          if [ "$SOURCE" = github-release ]; then
+            release=$(gh release view "$TAG" --repo "$GH_REPOSITORY" --json body,url,publishedAt)
+            notes=$(jq -r '.body // ""' <<< "$release")
+            source_url=$(jq -r '.url' <<< "$release")
+            published_at=$(jq -r '.publishedAt' <<< "$release")
+          fi
           artifacts='[]'
           if [ "$MODE" = android ]; then
             file=$(find release-assets -maxdepth 1 -type f -name '*.apk' -printf '%f\n')
@@ -137,7 +324,7 @@ jobs:
             size=$(stat -c '%s' "$local_file")
             sha=$(sha256sum "$local_file" | cut -d ' ' -f1)
             key="apps/${APP}/${version}/${file}"
-            npx --yes wrangler@4 r2 object put "nyanstall/${key}" --remote --file "$local_file" --content-type application/vnd.android.package-archive
+            [ "$DRY_RUN" = true ] || npx --yes wrangler@4 r2 object put "nyanstall/${key}" --remote --file "$local_file" --content-type application/vnd.android.package-archive
             artifacts=$(jq -n --arg file "$file" --arg key "$key" --arg sha "$sha" --argjson size "$size" '[{target:"android",arch:"any",kind:"apk",updater:false,filename:$file,r2_key:$key,size:$size,sha256:$sha,signature:null}]')
           else
             while IFS= read -r item; do
@@ -152,7 +339,7 @@ jobs:
               sha=$(sha256sum "$local_file" | cut -d ' ' -f1)
               key="apps/${APP}/${version}/${file}"
               content_type=$(file --brief --mime-type "$local_file")
-              npx --yes wrangler@4 r2 object put "nyanstall/${key}" --remote --file "$local_file" --content-type "$content_type"
+              [ "$DRY_RUN" = true ] || npx --yes wrangler@4 r2 object put "nyanstall/${key}" --remote --file "$local_file" --content-type "$content_type"
               signature=null
               if [ "$updater" = true ]; then
                 sig_file=$(jq -r '.sig_file' <<< "$item")
@@ -164,14 +351,29 @@ jobs:
           fi
           payload=$(jq -n --arg version "$version" --argjson version_code "${VERSION_CODE:-null}" --arg tag "$TAG" --arg notes "$notes" --arg source_url "$source_url" --arg published_at "$published_at" --argjson artifacts "$artifacts" \
             '{version:$version,tag:$tag,notes:$notes,source_url:$source_url,published_at:$published_at,artifacts:$artifacts} + (if $version_code == null then {} else {version_code:$version_code} end)')
+          if [ "$SOURCE" = artifact ] || [ "$CHANNEL" != stable ] || [ -n "$git_sha" ] || [ -n "$git_ref" ]; then
+            payload=$(jq --arg channel "$CHANNEL" --arg sha "$git_sha" --arg ref "$git_ref" --arg source "$SOURCE" '. + (if $source == "artifact" or $channel != "stable" then {channel:$channel} else {} end) + (if $sha != "" then {git_sha:$sha} else {} end) + (if $ref != "" then {git_ref:$ref} else {} end)' <<< "$payload")
+          fi
+          compact_payload=$(jq -c . <<< "$payload")
+          echo "payload=$compact_payload" >> "$GITHUB_OUTPUT"
+          if [ "$DRY_RUN" = true ]; then
+            echo "$compact_payload"
+            echo "POST ${INGEST_URL%/}/v1/ingest/${APP}/releases"
+            update_target null
+            exit 0
+          fi
           printf '%s\n' "$payload" > payload.json
           status=$(curl --silent --show-error --output response.json --write-out '%{http_code}' \
             -X POST -H 'Content-Type: application/json' \
-            -H "CF-Access-Client-Id: $ACCESS_CLIENT_ID" \
-            -H "CF-Access-Client-Secret: $ACCESS_CLIENT_SECRET" \
+            -H "@$headers" \
             --data-binary @payload.json "${INGEST_URL%/}/v1/ingest/${APP}/releases")
           if [ "$status" = 201 ] || [ "$status" = 200 ]; then
             cat response.json
+            echo "release-id=$(jq -r '.release_id' response.json)" >> "$GITHUB_OUTPUT"
+            if [ -n "$PRODUCT" ]; then
+              release_id=$(jq -c -e '.release_id | select(. != null)' response.json)
+              update_target "$release_id"
+            fi
           else
             cat response.json
             echo "::error::Ingest POST returned HTTP $status"

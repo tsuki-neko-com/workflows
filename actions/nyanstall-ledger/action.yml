@@ -1,0 +1,53 @@
+name: Nyanstall ledger
+description: Call the Nyanstall ledger API
+inputs:
+  command:
+    description: Ledger command
+    required: true
+  product:
+    description: Product identifier
+  app:
+    description: App identifier
+  version:
+    description: Product version
+  channel:
+    description: Release channel
+  pr-number:
+    description: Pull request number
+  body:
+    description: JSON request body
+  ingest-url:
+    description: Ingest API base URL
+    default: https://ingest.nyanstall.tsuki-neko.com
+  access-client-id:
+    description: Cloudflare Access client ID
+  access-client-secret:
+    description: Cloudflare Access client secret
+  dry-run:
+    description: Describe the request without sending it
+    default: 'false'
+outputs:
+  status:
+    description: HTTP status or dry-run
+    value: ${{ steps.ledger.outputs.status }}
+  response:
+    description: Compact JSON response or dry-run request
+    value: ${{ steps.ledger.outputs.response }}
+runs:
+  using: composite
+  steps:
+    - id: ledger
+      shell: bash
+      env:
+        LEDGER_COMMAND: ${{ inputs.command }}
+        LEDGER_PRODUCT: ${{ inputs.product }}
+        LEDGER_APP: ${{ inputs.app }}
+        LEDGER_VERSION: ${{ inputs.version }}
+        LEDGER_CHANNEL: ${{ inputs.channel }}
+        LEDGER_PR_NUMBER: ${{ inputs.pr-number }}
+        LEDGER_BODY: ${{ inputs.body }}
+        LEDGER_INGEST_URL: ${{ inputs.ingest-url }}
+        LEDGER_ACCESS_CLIENT_ID: ${{ inputs.access-client-id }}
+        LEDGER_ACCESS_CLIENT_SECRET: ${{ inputs.access-client-secret }}
+        LEDGER_DRY_RUN: ${{ inputs.dry-run }}
+      run: bash "$GITHUB_ACTION_PATH/ledger.sh"

@@ -40,3 +40,86 @@ jobs:
       working-directory: fixtures/subdir
       npm-registry-scope: "@tsuki-neko-com"
     secrets: inherit
+
+  publish-fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          mkdir -p android tauri
+          printf 'fake apk' > android/selftest.apk
+          printf 'fake nsis' > tauri/selftest.exe
+          printf 'signature' > tauri/selftest.exe.sig
+          printf 'fake deb' > tauri/selftest.deb
+          printf '%s\n' '{"artifacts":[{"file":"selftest.exe","target":"windows","arch":"x86_64","kind":"nsis","updater":true,"sig_file":"selftest.exe.sig"},{"file":"selftest.deb","target":"linux","arch":"x86_64","kind":"deb","updater":false}]}' > tauri/nyanstall-artifacts.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: publish-android
+          path: android/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: publish-tauri
+          path: tauri/
+
+  publish-android-beta:
+    needs: publish-fixtures
+    uses: ./.github/workflows/nyanstall-publish.yml
+    with:
+      app: selftest-android
+      mode: android
+      tag: beta/0.2.14-beta.1
+      source: artifact
+      artifact-name: publish-android
+      version: 0.2.14-beta.1
+      channel: beta
+      version-code: "201401"
+      product: selftest
+      product-version: 0.2.14-beta.1
+      dry-run: true
+
+  publish-tauri-beta:
+    needs: publish-fixtures
+    uses: ./.github/workflows/nyanstall-publish.yml
+    with:
+      app: selftest-tauri
+      mode: tauri
+      tag: beta/0.2.14-beta.1
+      source: artifact
+      artifact-name: publish-tauri
+      version: 0.2.14-beta.1
+      channel: beta
+      dry-run: true
+
+  publish-assert:
+    needs: [publish-android-beta, publish-tauri-beta]
+    runs-on: ubuntu-latest
+    env:
+      ANDROID: ${{ needs.publish-android-beta.outputs.payload }}
+      TAURI: ${{ needs.publish-tauri-beta.outputs.payload }}
+      TARGET_REQUEST: ${{ needs.publish-android-beta.outputs.target-request }}
+      ANDROID_VERSION: ${{ needs.publish-android-beta.outputs.version }}
+      TAURI_VERSION: ${{ needs.publish-tauri-beta.outputs.version }}
+    steps:
+      - run: |
+          set -euo pipefail
+          jq -e ' .method == "PATCH" and (.url | endswith("/v1/ingest/products/selftest/versions/0.2.14-beta.1/targets/selftest-android")) and .body.state == "published"' <<< "$TARGET_REQUEST"
+          test "$ANDROID_VERSION" = 0.2.14-beta.1
+          test "$TAURI_VERSION" = 0.2.14-beta.1
+          jq -e '.version == "0.2.14-beta.1" and .channel == "beta" and (.git_sha | test("^[0-9a-fA-F]{40}$")) and .version_code == 201401 and (.artifacts | length == 1) and .artifacts[0].r2_key == "apps/selftest-android/0.2.14-beta.1/selftest.apk" and (.artifacts[0].sha256 | test("^[0-9a-f]{64}$"))' <<< "$ANDROID"
+          jq -e '.version == "0.2.14-beta.1" and .channel == "beta" and (.git_sha | test("^[0-9a-fA-F]{40}$")) and (.artifacts | length == 2) and ([.artifacts[].r2_key] | sort) == ["apps/selftest-tauri/0.2.14-beta.1/selftest.deb", "apps/selftest-tauri/0.2.14-beta.1/selftest.exe"] and all(.artifacts[]; .sha256 | test("^[0-9a-f]{64}$")) and ([.artifacts[] | select(.updater) | .signature] | all(. != null))' <<< "$TAURI"
+
+  ledger-action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: bash actions/nyanstall-ledger/test.sh
+      - id: ledger
+        uses: ./actions/nyanstall-ledger
+        with:
+          command: next-beta
+          product: selftest
+          body: '{"base_version":"0.2.14"}'
+          dry-run: 'true'
+      - name: Check ledger output
+        env:
+          STATUS: ${{ steps.ledger.outputs.status }}
+        run: test "$STATUS" = dry-run
