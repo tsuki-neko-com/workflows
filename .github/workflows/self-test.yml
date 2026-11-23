@@ -106,3 +106,20 @@ jobs:
           test "$TAURI_VERSION" = 0.2.14-beta.1
           jq -e '.version == "0.2.14-beta.1" and .channel == "beta" and (.git_sha | test("^[0-9a-fA-F]{40}$")) and .version_code == 201401 and (.artifacts | length == 1) and .artifacts[0].r2_key == "apps/selftest-android/0.2.14-beta.1/selftest.apk" and (.artifacts[0].sha256 | test("^[0-9a-f]{64}$"))' <<< "$ANDROID"
           jq -e '.version == "0.2.14-beta.1" and .channel == "beta" and (.git_sha | test("^[0-9a-fA-F]{40}$")) and (.artifacts | length == 2) and ([.artifacts[].r2_key] | sort) == ["apps/selftest-tauri/0.2.14-beta.1/selftest.deb", "apps/selftest-tauri/0.2.14-beta.1/selftest.exe"] and all(.artifacts[]; .sha256 | test("^[0-9a-f]{64}$")) and ([.artifacts[] | select(.updater) | .signature] | all(. != null))' <<< "$TAURI"
+
+  ledger-action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: bash actions/nyanstall-ledger/test.sh
+      - id: ledger
+        uses: ./actions/nyanstall-ledger
+        with:
+          command: next-beta
+          product: selftest
+          body: '{"base_version":"0.2.14"}'
+          dry-run: 'true'
+      - name: Check ledger output
+        env:
+          STATUS: ${{ steps.ledger.outputs.status }}
+        run: test "$STATUS" = dry-run
