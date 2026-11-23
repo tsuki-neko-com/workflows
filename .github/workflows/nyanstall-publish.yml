@@ -69,12 +69,25 @@ on:
         type: string
         required: false
         default: ''
+      product:
+        description: Ledger product name
+        type: string
+        required: false
+        default: ''
+      product-version:
+        description: Ledger product version
+        type: string
+        required: false
+        default: ''
       dry-run:
         description: Build payload without publishing
         type: boolean
         required: false
         default: false
     outputs:
+      target-request:
+        description: Ledger PATCH request for dry run
+        value: ${{ jobs.publish.outputs.target-request }}
       payload:
         description: Published payload
         value: ${{ jobs.publish.outputs.payload }}
@@ -101,6 +114,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     outputs:
+      target-request: ${{ steps.publish.outputs.target-request }}
       payload: ${{ steps.publish.outputs.payload }}
       release-id: ${{ steps.publish.outputs.release-id }}
       version: ${{ steps.publish.outputs.version }}
@@ -119,6 +133,8 @@ jobs:
           CHANNEL: ${{ inputs.channel }}
           TAG: ${{ inputs.tag }}
           DRY_RUN: ${{ inputs.dry-run }}
+          PRODUCT: ${{ inputs.product }}
+          PRODUCT_VERSION: ${{ inputs.product-version }}
         run: |
           set -euo pipefail
           missing=""
@@ -131,6 +147,10 @@ jobs:
               echo "::error::Missing required secret(s):$missing"
               exit 1
             fi
+          fi
+          if { [ -n "$PRODUCT" ] && [ -z "$PRODUCT_VERSION" ]; } || { [ -z "$PRODUCT" ] && [ -n "$PRODUCT_VERSION" ]; }; then
+            echo "::error::product and product-version must both be specified or both be empty"
+            exit 1
           fi
           case "$SOURCE" in github-release|artifact) ;; *) echo "::error::source must be github-release or artifact"; exit 1 ;; esac
           case "$CHANNEL" in stable|beta) ;; *) echo "::error::channel must be stable or beta"; exit 1 ;; esac
@@ -230,8 +250,31 @@ jobs:
           INPUT_SOURCE_URL: ${{ inputs.source-url }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           DRY_RUN: ${{ inputs.dry-run }}
+          PRODUCT: ${{ inputs.product }}
+          PRODUCT_VERSION: ${{ inputs.product-version }}
         run: |
           set -euo pipefail
+          update_target() {
+            [ -n "$PRODUCT" ] || return 0
+            local release_id="$1" target_url body request status
+            target_url="${INGEST_URL%/}/v1/ingest/products/${PRODUCT}/versions/${PRODUCT_VERSION}/targets/${APP}"
+            body=$(jq -cn --argjson release_id "$release_id" '{state:"published",release_id:$release_id}')
+            if [ "$DRY_RUN" = true ]; then
+              request=$(jq -cn --arg url "$target_url" --argjson body "$body" '{method:"PATCH",url:$url,body:$body}')
+              echo "target-request=$request" >> "$GITHUB_OUTPUT"
+              echo "$request"
+              return 0
+            fi
+            printf '%s\n' "$body" > target-payload.json
+            status=$(curl --silent --show-error --output target-response.json --write-out '%{http_code}' \
+              -X PATCH -H 'Content-Type: application/json' -H "@$headers" \
+              --data-binary @target-payload.json "$target_url")
+            if [ "$status" != 200 ]; then
+              cat target-response.json
+              echo "::error::Ledger PATCH returned HTTP $status"
+              exit 1
+            fi
+          }
           if [ "$SOURCE" = artifact ]; then
             version="$INPUT_VERSION"
             notes="$INPUT_NOTES"
@@ -254,6 +297,10 @@ jobs:
             status=$(curl --silent --show-error --output preflight.json --write-out '%{http_code}' -H "@$headers" "$api")
             if [ "$status" = 200 ]; then
               echo "release-id=$(jq -r '.release_id' preflight.json)" >> "$GITHUB_OUTPUT"
+              if [ -n "$PRODUCT" ]; then
+                release_id=$(jq -c -e '.release_id | select(. != null)' preflight.json)
+                update_target "$release_id"
+              fi
               echo "Release $APP $version is already registered; skipping."
               exit 0
             elif [ "$status" != 404 ]; then
@@ -312,6 +359,7 @@ jobs:
           if [ "$DRY_RUN" = true ]; then
             echo "$compact_payload"
             echo "POST ${INGEST_URL%/}/v1/ingest/${APP}/releases"
+            update_target null
             exit 0
           fi
           printf '%s\n' "$payload" > payload.json
@@ -322,6 +370,10 @@ jobs:
           if [ "$status" = 201 ] || [ "$status" = 200 ]; then
             cat response.json
             echo "release-id=$(jq -r '.release_id' response.json)" >> "$GITHUB_OUTPUT"
+            if [ -n "$PRODUCT" ]; then
+              release_id=$(jq -c -e '.release_id | select(. != null)' response.json)
+              update_target "$release_id"
+            fi
           else
             cat response.json
             echo "::error::Ingest POST returned HTTP $status"
